@@ -57,3 +57,4 @@ _bmad-output/*
 .DS_Store
 ._*
 .gocache/
+CLIProxyAPI_bin

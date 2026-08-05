@@ -62,8 +62,20 @@ func GetProviderName(modelName string) []string {
 		providers = append(providers, name)
 	}
 
-	for _, provider := range registry.GetGlobalRegistry().GetModelProviders(modelName) {
+	cleanModel := strings.TrimSpace(modelName)
+	if strings.HasPrefix(cleanModel, "kiro/") || strings.HasPrefix(cleanModel, "kr/") {
+		appendProvider("kiro")
+		cleanModel = strings.TrimPrefix(strings.TrimPrefix(cleanModel, "kiro/"), "kr/")
+	}
+
+	for _, provider := range registry.GetGlobalRegistry().GetModelProviders(cleanModel) {
 		appendProvider(provider)
+	}
+
+	if cleanModel != modelName {
+		for _, provider := range registry.GetGlobalRegistry().GetModelProviders(modelName) {
+			appendProvider(provider)
+		}
 	}
 
 	if len(providers) > 0 {

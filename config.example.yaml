@@ -501,6 +501,25 @@ nonstream-keepalive-interval: 0
 #         alias: "claude-opus-4.66"
 #       - name: "kimi-k2.5"
 #         alias: "claude-opus-4.66"
+#
+#   # Kiro-Go sidecar example. Use this when Kiro-Go runs in the same Docker Compose network.
+#   - name: "kiro-go"
+#     disabled: false
+#     prefix: "kiro"
+#     base-url: "http://kiro-go:8080/v1"
+#     api-key-entries:
+#       - api-key: "kiro-go-internal-upstream-key-change-me"
+#     models:
+#       - name: "gpt-4o"
+#         alias: "kiro-gpt-4o"
+#         display-name: "Kiro-Go GPT-4o"
+#         input-modalities: [text]
+#         output-modalities: [text]
+#       - name: "claude-sonnet-4.5"
+#         alias: "kiro-sonnet"
+#         display-name: "Kiro-Go Claude Sonnet"
+#         input-modalities: [text]
+#         output-modalities: [text]
 
 # Vertex API keys (Vertex-compatible endpoints, base-url is optional)
 # vertex-api-key:

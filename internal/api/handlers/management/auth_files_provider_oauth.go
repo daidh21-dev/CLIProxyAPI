@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -885,4 +887,555 @@ func PopulateAuthContext(ctx context.Context, c *gin.Context) context.Context {
 		Headers: c.Request.Header,
 	}
 	return coreauth.WithRequestInfo(ctx, info)
+}
+
+func (h *Handler) RequestKiroToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	method := "builder-id"
+	region := kiro.DefaultAwsRegion
+	startURL := kiro.DefaultStartURL
+	ssoToken := ""
+	apiKey := ""
+
+	if c.Request.Method == http.MethodPost {
+		var req struct {
+			Method     string `json:"method"`
+			AuthMethod string `json:"auth_method"`
+			Region     string `json:"region"`
+			StartURL   string `json:"start_url"`
+			SsoToken   string `json:"sso_token"`
+			APIKey     string `json:"api_key"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		if req.Method != "" {
+			method = req.Method
+		} else if req.AuthMethod != "" {
+			method = req.AuthMethod
+		}
+		if req.Region != "" {
+			region = req.Region
+		}
+		if req.StartURL != "" {
+			startURL = req.StartURL
+		}
+		ssoToken = req.SsoToken
+		apiKey = req.APIKey
+	} else {
+		method = c.DefaultQuery("method", c.DefaultQuery("auth_method", method))
+		region = c.DefaultQuery("region", region)
+		startURL = c.DefaultQuery("start_url", startURL)
+		ssoToken = c.DefaultQuery("sso_token", "")
+		apiKey = c.DefaultQuery("api_key", "")
+		if strings.TrimSpace(ssoToken) != "" || strings.TrimSpace(apiKey) != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Kiro secrets must be submitted in a POST body"})
+			return
+		}
+	}
+	method = strings.ToLower(strings.TrimSpace(method))
+
+	authSvc := kiro.NewKiroAuth(h.cfg, nil)
+
+	switch method {
+	case "iam-sso", "idc":
+		sessionID, authorizeURL, expiresIn, err := authSvc.StartIamSsoAuth(ctx, startURL, region)
+		if err != nil {
+			log.Errorf("Failed to start Kiro IAM SSO flow: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":      "ok",
+			"auth_method": "iam-sso",
+			"session_id":  sessionID,
+			"url":         authorizeURL,
+			"expires_in":  expiresIn,
+		})
+
+	case "google", "github":
+		redirectURI := kiro.SocialRedirectURI
+		var forwarder *callbackForwarder
+		if isWebUIRequest(c) {
+			redirectURI = kiro.KiroSocialDefaultLoopbackURL()
+			targetURL, errTarget := h.managementCallbackURL(kiro.KiroSocialDefaultLoopbackPath)
+			if errTarget != nil {
+				log.WithError(errTarget).Error("failed to compute Kiro callback target")
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
+				return
+			}
+			forwarderStart, errStart := startCallbackForwarder(kiroCallbackPort, "kiro", targetURL)
+			if errStart != nil {
+				log.WithError(errStart).Warn("failed to start Kiro callback forwarder")
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
+				return
+			}
+			forwarder = forwarderStart
+		}
+		sessionID, authorizationURL, expiresIn, state, err := authSvc.StartKiroSocialAuthWithRedirect(method, redirectURI)
+		if err != nil {
+			if forwarder != nil {
+				stopCallbackForwarderInstance(kiroCallbackPort, forwarder)
+			}
+			log.Errorf("Failed to start Kiro %s social flow: %v", method, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if state != "" {
+			RegisterOAuthSession(state, "kiro")
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":      "ok",
+			"auth_method": method,
+			"session_id":  sessionID,
+			"state":       state,
+			"url":         authorizationURL,
+			"expires_in":  expiresIn,
+		})
+
+	case "microsoft-sso", "external_idp", "azuread":
+		sessionID, authorizationURL, expiresIn, err := authSvc.StartMicrosoftSSOAuth()
+		if err != nil {
+			log.Errorf("Failed to start Kiro Microsoft SSO flow: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":      "ok",
+			"auth_method": "microsoft-sso",
+			"session_id":  sessionID,
+			"url":         authorizationURL,
+			"expires_in":  expiresIn,
+		})
+
+	case "sso-token":
+		if strings.TrimSpace(ssoToken) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "sso_token parameter is required"})
+			return
+		}
+		creds, err := authSvc.ImportFromSsoToken(ctx, ssoToken, region)
+		if err != nil {
+			log.Errorf("Failed to import Kiro SSO token: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		now := time.Now()
+		metadata := map[string]any{
+			"type":          "kiro",
+			"access_token":  creds.AccessToken,
+			"refresh_token": creds.RefreshToken,
+			"profile_arn":   creds.ProfileArn,
+			"auth_method":   "builder-id",
+			"client_id":     creds.ClientID,
+			"client_secret": creds.ClientSecret,
+			"expires_at":    creds.ExpiresAt,
+			"timestamp":     now.UnixMilli(),
+		}
+		fileName := fmt.Sprintf("kiro-%d.json", now.Unix())
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "kiro",
+			FileName: fileName,
+			Label:    "Kiro AI (SSO Token)",
+			Metadata: metadata,
+		}
+		savedPath, errSave := h.saveTokenRecord(c.Request.Context(), record)
+		if errSave != nil {
+			log.Errorf("Failed to save token record: %v", errSave)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": errSave.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":      "ok",
+			"auth_method": "sso-token",
+			"file_name":   fileName,
+			"path":        savedPath,
+		})
+
+	case "auto-import":
+		autoCreds, err := kiro.AutoDetectKiroToken()
+		if err != nil {
+			log.Errorf("Failed to auto-detect Kiro token: %v", err)
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error(), "found": false})
+			return
+		}
+		now := time.Now()
+		metadata := map[string]any{
+			"type":          "kiro",
+			"refresh_token": autoCreds.RefreshToken,
+			"profile_arn":   autoCreds.ProfileArn,
+			"auth_method":   "imported",
+			"region":        autoCreds.Region,
+			"client_id":     autoCreds.ClientId,
+			"client_secret": autoCreds.ClientSecret,
+			"timestamp":     now.UnixMilli(),
+		}
+		fileName := fmt.Sprintf("kiro-%d.json", now.Unix())
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "kiro",
+			FileName: fileName,
+			Label:    "Kiro AI (Auto-Detected Local)",
+			Metadata: metadata,
+		}
+		savedPath, errSave := h.saveTokenRecord(c.Request.Context(), record)
+		if errSave != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": errSave.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":      "ok",
+			"found":       true,
+			"auth_method": "auto-import",
+			"file_name":   fileName,
+			"path":        savedPath,
+		})
+
+	case "api-key":
+		if strings.TrimSpace(apiKey) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "api_key is required"})
+			return
+		}
+		keyResult, errVal := kiro.ValidateKiroApiKey(apiKey, region)
+		if errVal != nil {
+			log.Errorf("Failed to validate Kiro API Key: %v", errVal)
+			c.JSON(http.StatusBadRequest, gin.H{"error": errVal.Error()})
+			return
+		}
+		now := time.Now()
+		metadata := map[string]any{
+			"type":         "kiro",
+			"access_token": keyResult.ApiKey,
+			"kiro_api_key": keyResult.ApiKey,
+			"auth_method":  "api_key",
+			"region":       keyResult.Region,
+			"timestamp":    now.UnixMilli(),
+		}
+		fileName := fmt.Sprintf("kiro-%d.json", now.Unix())
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "kiro",
+			FileName: fileName,
+			Label:    "Kiro AI (API Key)",
+			Metadata: metadata,
+		}
+		savedPath, errSave := h.saveTokenRecord(c.Request.Context(), record)
+		if errSave != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": errSave.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":      "ok",
+			"auth_method": "api-key",
+			"file_name":   fileName,
+			"path":        savedPath,
+		})
+
+	case "builder-id":
+		fmt.Println("Initializing Kiro AI authentication (device flow)...")
+
+		state := fmt.Sprintf("kiro-%d", time.Now().UnixNano())
+		reg, errReg := authSvc.RegisterClient(ctx, region)
+		if errReg != nil {
+			log.Errorf("Failed to register Kiro OIDC client: %v", errReg)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register OIDC client"})
+			return
+		}
+
+		deviceFlow, errStart := authSvc.StartDeviceAuthorization(ctx, reg.ClientID, reg.ClientSecret, startURL, region)
+		if errStart != nil {
+			log.Errorf("Failed to start Kiro device flow: %v", errStart)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start device authorization flow"})
+			return
+		}
+
+		authURL := strings.TrimSpace(deviceFlow.VerificationURIComplete)
+		if authURL == "" {
+			authURL = strings.TrimSpace(deviceFlow.VerificationURI)
+		}
+
+		RegisterOAuthSession(state, "kiro")
+
+		go func() {
+			pollCtx, cancelPoll := context.WithCancel(ctx)
+			defer cancelPoll()
+			go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "kiro")
+
+			fmt.Println("Waiting for Kiro AI authentication...")
+			interval := time.Duration(deviceFlow.Interval) * time.Second
+			if interval < 2*time.Second {
+				interval = 5 * time.Second
+			}
+			deadline := time.Now().Add(time.Duration(deviceFlow.ExpiresIn) * time.Second)
+
+			var tokenResp *kiro.TokenResponse
+			for {
+				select {
+				case <-pollCtx.Done():
+					return
+				default:
+				}
+				if time.Now().After(deadline) {
+					SetOAuthSessionError(state, "Device code expired")
+					return
+				}
+				resp, errPoll := authSvc.PollDeviceToken(pollCtx, reg.ClientID, reg.ClientSecret, deviceFlow.DeviceCode, region)
+				if errPoll == nil && resp.AccessToken != "" {
+					tokenResp = resp
+					break
+				}
+				time.Sleep(interval)
+			}
+
+			if !IsOAuthSessionPending(state, "kiro") {
+				return
+			}
+
+			now := time.Now()
+			metadata := map[string]any{
+				"type":          "kiro",
+				"access_token":  tokenResp.AccessToken,
+				"refresh_token": tokenResp.RefreshToken,
+				"profile_arn":   tokenResp.ProfileArn,
+				"auth_method":   "builder-id",
+				"client_id":     reg.ClientID,
+				"client_secret": reg.ClientSecret,
+				"region":        region,
+				"expires_at":    now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Unix(),
+				"timestamp":     now.UnixMilli(),
+			}
+
+			fileName := fmt.Sprintf("kiro-%d.json", now.Unix())
+			record := &coreauth.Auth{
+				ID:       fileName,
+				Provider: "kiro",
+				FileName: fileName,
+				Label:    "Kiro AI (AWS Builder ID)",
+				Metadata: metadata,
+			}
+			if errGuard := guardOAuthSessionPendingForSave(state, "kiro"); errGuard != nil {
+				return
+			}
+			savedPath, errSave := h.saveTokenRecord(ctx, record)
+			if errSave != nil {
+				log.Errorf("Failed to save token to file: %v", errSave)
+				SetOAuthSessionError(state, "Failed to save token to file")
+				return
+			}
+
+			CompleteOAuthSession(state)
+			fmt.Printf("Kiro authentication successful! Token saved to %s\n", savedPath)
+		}()
+
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "auth_method": "builder-id", "url": authURL, "state": state})
+	}
+}
+
+func (h *Handler) saveKiroSocialCredential(ctx context.Context, authMethod string, res *kiro.MicrosoftSSOResult) (string, string, error) {
+	if res == nil {
+		return "", "", fmt.Errorf("invalid social callback state")
+	}
+	now := time.Now()
+	metadata := map[string]any{
+		"type":          "kiro",
+		"access_token":  res.AccessToken,
+		"refresh_token": res.RefreshToken,
+		"profile_arn":   res.ProfileArn,
+		"auth_method":   authMethod,
+		"expires_at":    res.ExpiresAt,
+		"timestamp":     now.UnixMilli(),
+	}
+	fileName := fmt.Sprintf("kiro-%d.json", now.UnixNano())
+	record := &coreauth.Auth{
+		ID:       fileName,
+		Provider: "kiro",
+		FileName: fileName,
+		Label:    fmt.Sprintf("Kiro AI (%s)", authMethod),
+		Metadata: metadata,
+	}
+	savedPath, errSave := h.saveTokenRecord(ctx, record)
+	if errSave != nil {
+		return "", "", errSave
+	}
+	return fileName, savedPath, nil
+}
+
+func (h *Handler) HandleKiroSocialLoopbackCallback(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+	callbackForwardersMu.Lock()
+	forwarder := callbackForwarders[kiroCallbackPort]
+	callbackForwardersMu.Unlock()
+	defer stopCallbackForwarderInstance(kiroCallbackPort, forwarder)
+	state := strings.TrimSpace(c.Query("state"))
+	callbackURL := kiro.KiroSocialDefaultLoopbackURL()
+	if c.Request != nil && c.Request.URL != nil && c.Request.URL.RawQuery != "" {
+		callbackURL += "?" + c.Request.URL.RawQuery
+	}
+
+	authSvc := kiro.NewKiroAuth(h.cfg, nil)
+	authMethod, progress, err := authSvc.ContinueKiroSocialAuthByState(callbackURL)
+	if err != nil {
+		if state != "" {
+			SetOAuthSessionError(state, err.Error())
+		}
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusBadRequest, `<html><head><meta charset="utf-8"><title>Kiro authentication failed</title></head><body><h1>Kiro authentication failed</h1><p>%s</p></body></html>`, html.EscapeString(err.Error()))
+		return
+	}
+	if progress == nil || progress.Result == nil {
+		if state != "" {
+			SetOAuthSessionError(state, "invalid social callback state")
+		}
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusInternalServerError, `<html><head><meta charset="utf-8"><title>Kiro authentication failed</title></head><body><h1>Kiro authentication failed</h1><p>Invalid social callback state.</p></body></html>`)
+		return
+	}
+	if state != "" {
+		if errGuard := guardOAuthSessionPendingForSave(state, "kiro"); errGuard != nil {
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusConflict, `<html><head><meta charset="utf-8"><title>Kiro authentication already handled</title></head><body><h1>Kiro authentication already handled</h1><p>This login session is no longer pending.</p></body></html>`)
+			return
+		}
+	}
+	if _, _, errSave := h.saveKiroSocialCredential(ctx, authMethod, progress.Result); errSave != nil {
+		if state != "" {
+			SetOAuthSessionError(state, "Failed to save Kiro social credentials")
+		}
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusInternalServerError, `<html><head><meta charset="utf-8"><title>Kiro authentication failed</title></head><body><h1>Kiro authentication failed</h1><p>Failed to save Kiro social credentials.</p></body></html>`)
+		return
+	}
+	if state != "" {
+		CompleteOAuthSession(state)
+	}
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, `<html><head><meta charset="utf-8"><title>Kiro authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Kiro authentication successful!</h1><p>You can close this window and return to CPA Manager Plus.</p></body></html>`)
+}
+
+func (h *Handler) SubmitKiroCallback(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	var req struct {
+		AuthMethod  string `json:"auth_method"`
+		SessionID   string `json:"session_id"`
+		CallbackURL string `json:"callback_url"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	if req.SessionID == "" || req.CallbackURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id and callback_url are required"})
+		return
+	}
+
+	authSvc := kiro.NewKiroAuth(h.cfg, nil)
+	req.AuthMethod = strings.ToLower(strings.TrimSpace(req.AuthMethod))
+
+	switch req.AuthMethod {
+	case "iam-sso", "idc":
+		creds, err := authSvc.CompleteIamSsoAuth(ctx, req.SessionID, req.CallbackURL)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		now := time.Now()
+		metadata := map[string]any{
+			"type":          "kiro",
+			"access_token":  creds.AccessToken,
+			"refresh_token": creds.RefreshToken,
+			"profile_arn":   creds.ProfileArn,
+			"auth_method":   "idc",
+			"client_id":     creds.ClientID,
+			"client_secret": creds.ClientSecret,
+			"region":        creds.Region,
+			"expires_at":    creds.ExpiresAt,
+			"timestamp":     now.UnixMilli(),
+		}
+		fileName := fmt.Sprintf("kiro-%d.json", now.Unix())
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "kiro",
+			FileName: fileName,
+			Label:    "Kiro AI (AWS IAM SSO)",
+			Metadata: metadata,
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save token to file"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "stage": "complete", "file_name": fileName, "path": savedPath})
+
+	case "microsoft-sso", "external_idp", "azuread":
+		progress, err := authSvc.ContinueMicrosoftSSOAuth(req.SessionID, req.CallbackURL)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if progress.AuthorizationURL != "" {
+			c.JSON(http.StatusOK, gin.H{"status": "ok", "stage": "provider", "url": progress.AuthorizationURL})
+			return
+		}
+		if progress.Result != nil {
+			now := time.Now()
+			res := progress.Result
+			metadata := map[string]any{
+				"type":           "kiro",
+				"access_token":   res.AccessToken,
+				"refresh_token":  res.RefreshToken,
+				"auth_method":    "external_idp",
+				"client_id":      res.ClientID,
+				"token_endpoint": res.TokenEndpoint,
+				"issuer_url":     res.IssuerURL,
+				"scopes":         res.Scopes,
+				"email":          res.Email,
+				"user_id":        res.UserID,
+				"expires_at":     res.ExpiresAt,
+				"timestamp":      now.UnixMilli(),
+			}
+			fileName := fmt.Sprintf("kiro-%d.json", now.Unix())
+			record := &coreauth.Auth{
+				ID:       fileName,
+				Provider: "kiro",
+				FileName: fileName,
+				Label:    "Kiro AI (Microsoft Enterprise SSO)",
+				Metadata: metadata,
+			}
+			savedPath, errSave := h.saveTokenRecord(ctx, record)
+			if errSave != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save token to file"})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"status": "ok", "stage": "complete", "file_name": fileName, "path": savedPath})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid progress state"})
+
+	case "google", "github":
+		progress, err := authSvc.ContinueKiroSocialAuth(req.SessionID, req.CallbackURL)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if progress == nil || progress.Result == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid social callback state"})
+			return
+		}
+		fileName, savedPath, errSave := h.saveKiroSocialCredential(ctx, req.AuthMethod, progress.Result)
+		if errSave != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save Kiro social credentials"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "stage": "complete", "file_name": fileName, "path": savedPath})
+
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported auth_method for callback"})
+	}
 }

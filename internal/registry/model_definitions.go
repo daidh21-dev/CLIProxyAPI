@@ -29,6 +29,7 @@ type staticModelsJSON struct {
 	Kimi        []*ModelInfo `json:"kimi"`
 	Antigravity []*ModelInfo `json:"antigravity"`
 	XAI         []*ModelInfo `json:"xai"`
+	Kiro        []*ModelInfo `json:"kiro"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -79,6 +80,41 @@ func GetKimiModels() []*ModelInfo {
 // GetAntigravityModels returns the standard Antigravity model definitions.
 func GetAntigravityModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Antigravity)
+}
+
+// GetKiroModels returns standard Kiro model definitions.
+func GetKiroModels() []*ModelInfo {
+	models := cloneModelInfos(getModels().Kiro)
+	if len(models) == 0 {
+		models = []*ModelInfo{
+			{ID: "auto", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Auto (Kiro)", ContextLength: 1000000, MaxCompletionTokens: 32000},
+			{ID: "kiro-auto", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Kiro Auto", ContextLength: 1000000, MaxCompletionTokens: 32000},
+			{ID: "kiro", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Kiro AI", ContextLength: 1000000, MaxCompletionTokens: 32000},
+			{ID: "claude-opus-5", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude Opus 5 (Kiro)", ContextLength: 1000000, MaxCompletionTokens: 32000},
+			{ID: "claude-sonnet-5", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude Sonnet 5 (Kiro)", ContextLength: 1000000, MaxCompletionTokens: 32000},
+			{ID: "claude-opus-4.8", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude Opus 4.8 (Kiro)", ContextLength: 1000000, MaxCompletionTokens: 32000},
+			{ID: "claude-opus-4.7", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude Opus 4.7 (Kiro)", ContextLength: 1000000, MaxCompletionTokens: 32000},
+			{ID: "claude-opus-4.6", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude Opus 4.6 (Kiro)", ContextLength: 1000000, MaxCompletionTokens: 32000},
+			{ID: "claude-sonnet-4.6", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude Sonnet 4.6 (Kiro)", ContextLength: 1000000, MaxCompletionTokens: 32000},
+			{ID: "claude-opus-4.5", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude Opus 4.5 (Kiro)", ContextLength: 200000, MaxCompletionTokens: 16000},
+			{ID: "claude-sonnet-4.5", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude Sonnet 4.5 (Kiro)", ContextLength: 200000, MaxCompletionTokens: 16000},
+			{ID: "claude-3-5-sonnet", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude 3.5 Sonnet (Kiro)", ContextLength: 200000, MaxCompletionTokens: 16000},
+			{ID: "claude-3.5-sonnet", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude 3.5 Sonnet (Kiro)", ContextLength: 200000, MaxCompletionTokens: 16000},
+			{ID: "claude-3-7-sonnet", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude 3.7 Sonnet (Kiro)", ContextLength: 200000, MaxCompletionTokens: 16000},
+			{ID: "claude-3.7-sonnet", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude 3.7 Sonnet (Kiro)", ContextLength: 200000, MaxCompletionTokens: 16000},
+			{ID: "claude-sonnet-4", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude Sonnet 4 (Kiro)", ContextLength: 200000, MaxCompletionTokens: 16000},
+			{ID: "claude-haiku-4.5", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude Haiku 4.5 (Kiro)", ContextLength: 200000, MaxCompletionTokens: 16000},
+			{ID: "gpt-5.6-sol", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "GPT 5.6 Sol (Kiro)", ContextLength: 272000, MaxCompletionTokens: 16000},
+			{ID: "gpt-5.6-terra", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "GPT 5.6 Terra (Kiro)", ContextLength: 272000, MaxCompletionTokens: 16000},
+			{ID: "gpt-5.6-luna", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "GPT 5.6 Luna (Kiro)", ContextLength: 272000, MaxCompletionTokens: 16000},
+			{ID: "deepseek-3.2", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "DeepSeek V3.2 (Kiro)", ContextLength: 128000, MaxCompletionTokens: 8192},
+			{ID: "minimax-m2.5", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "MiniMax M2.5 (Kiro)", ContextLength: 128000, MaxCompletionTokens: 8192},
+			{ID: "minimax-m2.1", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "MiniMax M2.1 (Kiro)", ContextLength: 128000, MaxCompletionTokens: 8192},
+			{ID: "glm-5", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "GLM-5 (Kiro)", ContextLength: 128000, MaxCompletionTokens: 8192},
+			{ID: "qwen3-coder-next", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Qwen3 Coder Next (Kiro)", ContextLength: 128000, MaxCompletionTokens: 8192},
+		}
+	}
+	return models
 }
 
 // AntigravityWebSearchModelFor returns the Antigravity model that should run a
@@ -310,6 +346,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetAntigravityModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
+	case "kiro", "kr":
+		return GetKiroModels()
 	default:
 		return nil
 	}

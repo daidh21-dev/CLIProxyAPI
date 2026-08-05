@@ -518,6 +518,16 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	if auth == nil || exec == nil {
 		return nil, errors.New("auth or executor not found")
 	}
+	if m.store != nil {
+		if stored, errList := m.store.List(ctx); errList == nil {
+			for _, current := range stored {
+				if current != nil && strings.EqualFold(strings.TrimSpace(current.ID), id) {
+					auth = current.Clone()
+					break
+				}
+			}
+		}
+	}
 
 	// Another request may already have refreshed this credential.
 	if failedAccessToken != "" {
@@ -580,6 +590,12 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	modelsToResume := clearUnauthorizedModelStates(updated, now)
 	if m.shouldRefresh(updated, now) {
 		updated.NextRefreshAfter = now.Add(refreshIneffectiveBackoff)
+	}
+	if m.store != nil && !shouldSkipPersist(ctx) && updated.Metadata != nil && !IsConfigAPIKeyAuth(updated) && !IsPluginVirtualAuth(updated) {
+		if _, errPersistFirst := m.store.Save(ctx, updated); errPersistFirst != nil {
+			log.Debugf("persist refreshed auth before runtime update %s (%s) failed: %v", auth.Provider, auth.ID, errPersistFirst)
+			return nil, errPersistFirst
+		}
 	}
 	saved, errUpdate := m.Update(ctx, updated)
 	for _, model := range modelsToResume {

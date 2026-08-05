@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	kiroauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/credentialweight"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -706,6 +707,20 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	if h.postAuthHook != nil {
 		if err := h.postAuthHook(ctx, record); err != nil {
 			return "", fmt.Errorf("post-auth hook failed: %w", err)
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(record.Provider), "kiro") {
+		kiroauth.EnsureAuthMetadataFingerprint(record)
+		if existing, errList := store.List(ctx); errList == nil {
+			for _, current := range existing {
+				if current == nil {
+					continue
+				}
+				kiroauth.EnsureAuthMetadataFingerprint(current)
+				if reason := kiroauth.DuplicateReason(current, record); reason != "" {
+					return "", fmt.Errorf("kiro auth duplicate: %s", reason)
+				}
+			}
 		}
 	}
 	savedPath, errSave := store.Save(ctx, record)
