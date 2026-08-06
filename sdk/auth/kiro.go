@@ -20,7 +20,9 @@ type KiroAuthenticator struct {
 }
 
 // NewKiroAuthenticator constructs a Kiro authenticator with default settings.
-func NewKiroAuthenticator() Authenticator { return &KiroAuthenticator{Region: kiroauth.DefaultAwsRegion} }
+func NewKiroAuthenticator() Authenticator {
+	return &KiroAuthenticator{Region: kiroauth.DefaultAwsRegion}
+}
 
 // Provider returns the provider key for Kiro.
 func (KiroAuthenticator) Provider() string { return "kiro" }

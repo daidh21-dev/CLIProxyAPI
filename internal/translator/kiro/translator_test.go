@@ -44,6 +44,89 @@ func TestTranslateToKiroRequest(t *testing.T) {
 	}
 }
 
+func TestTranslateToKiroRequestWithToolResult(t *testing.T) {
+	openAIReq := map[string]any{
+		"model": "kiro/claude-sonnet-4.6",
+		"tools": []map[string]any{{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "read_file",
+				"description": "Read a file",
+				"parameters": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{},
+				},
+			},
+		}},
+		"messages": []map[string]any{
+			{"role": "user", "content": "Read a file."},
+			{"role": "assistant", "content": "", "tool_calls": []map[string]any{{
+				"id":   "call_1",
+				"type": "function",
+				"function": map[string]any{
+					"name":      "read_file",
+					"arguments": `{"path":"main.go"}`,
+				},
+			}}},
+			{"role": "tool", "tool_call_id": "call_1", "content": "package main"},
+		},
+	}
+
+	rawBody, _ := json.Marshal(openAIReq)
+	translated, _, err := TranslateToKiroRequest(rawBody, "")
+	if err != nil {
+		t.Fatalf("failed to translate request: %v", err)
+	}
+
+	var res KiroGenerateRequest
+	if err := json.Unmarshal(translated, &res); err != nil {
+		t.Fatalf("failed to unmarshal output: %v", err)
+	}
+	ctx := res.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext
+	if ctx == nil || len(ctx.ToolResults) != 1 || ctx.ToolResults[0].ToolUseID != "call_1" {
+		t.Fatalf("expected current tool result for call_1, got %#v", ctx)
+	}
+	if len(ctx.Tools) != 1 {
+		t.Fatalf("expected one tool spec, got %#v", ctx.Tools)
+	}
+	if _, hasAdditional := ctx.Tools[0].ToolSpecification.InputSchema.JSON.(map[string]any)["additionalProperties"]; hasAdditional {
+		t.Fatalf("expected unsupported additionalProperties to be stripped")
+	}
+	if len(res.ConversationState.History) != 2 || len(res.ConversationState.History[1].AssistantResponseMessage.ToolUses) != 1 {
+		t.Fatalf("expected active assistant tool use in history, got %#v", res.ConversationState.History)
+	}
+}
+
+func TestTranslateToKiroRequestWithImageBlock(t *testing.T) {
+	req := map[string]any{
+		"model": "claude-sonnet-4.6",
+		"messages": []map[string]any{{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "text", "text": "look"},
+				{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aGVsbG8="}},
+			},
+		}},
+	}
+	rawBody, _ := json.Marshal(req)
+	translated, _, err := TranslateToKiroRequest(rawBody, "")
+	if err != nil {
+		t.Fatalf("failed to translate request: %v", err)
+	}
+	var res KiroGenerateRequest
+	if err := json.Unmarshal(translated, &res); err != nil {
+		t.Fatalf("failed to unmarshal output: %v", err)
+	}
+	current := res.ConversationState.CurrentMessage.UserInputMessage
+	if current.Content != "look" {
+		t.Fatalf("expected text content, got %q", current.Content)
+	}
+	if len(current.Images) != 1 || current.Images[0].Format != "png" || current.Images[0].Source.Bytes != "aGVsbG8=" {
+		t.Fatalf("expected one png image, got %#v", current.Images)
+	}
+}
+
 func TestCleanKiroModelIDAliases(t *testing.T) {
 	tests := map[string]string{
 		"kiro/claude-sonnet-4.5-thinking": "claude-sonnet-4.5",

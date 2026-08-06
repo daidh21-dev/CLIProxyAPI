@@ -758,6 +758,28 @@ func TestExecuteProtocolStreamWithAuthManagerAgentUsesSelectionModelForAuth(t *t
 	}
 }
 
+func TestProvidersForExecutionStripsKiroPrefixForNativeAuthSelection(t *testing.T) {
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	providers, model, errMsg := handler.providersForExecution("kiro/claude-sonnet-4.5", "kiro/claude-sonnet-4.5", false, modelRouteDecision{}, modelExecutionOptions{})
+	if errMsg != nil {
+		t.Fatalf("providersForExecution() error = %+v", errMsg)
+	}
+	if len(providers) == 0 || providers[0] != "kiro" {
+		t.Fatalf("providers = %#v, want kiro first", providers)
+	}
+	if model != "claude-sonnet-4.5" {
+		t.Fatalf("model = %q, want cleaned Kiro model", model)
+	}
+
+	_, model, errMsg = handler.providersForExecution("kr/claude-opus-5(4096)", "kr/claude-opus-5(4096)", false, modelRouteDecision{}, modelExecutionOptions{})
+	if errMsg != nil {
+		t.Fatalf("providersForExecution() with suffix error = %+v", errMsg)
+	}
+	if model != "claude-opus-5(4096)" {
+		t.Fatalf("model with suffix = %q, want cleaned Kiro model preserving suffix", model)
+	}
+}
+
 func TestProvidersForExecutionForcedGeminiRejectsRouterProvider(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	decision := modelRouteDecision{Provider: "claude", Model: "claude-sonnet-4"}

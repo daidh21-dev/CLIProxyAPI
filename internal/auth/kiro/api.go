@@ -162,15 +162,15 @@ func profileArnQuery(profileArn string) string {
 // NormalizeKiroMetadata extracts best-effort identity fields for auth records.
 func NormalizeKiroMetadata(creds *KiroCredentials, email, userID string) map[string]any {
 	meta := map[string]any{
-		"type":         "kiro",
-		"access_token": creds.AccessToken,
-		"refresh_token": creds.RefreshToken,
-		"profile_arn":   creds.ProfileArn,
-		"auth_method":   creds.AuthMethod,
-		"client_id":     creds.ClientID,
-		"client_secret": creds.ClientSecret,
-		"region":        creds.Region,
-		"expires_at":    creds.ExpiresAt,
+		"type":           "kiro",
+		"access_token":   creds.AccessToken,
+		"refresh_token":  creds.RefreshToken,
+		"profile_arn":    creds.ProfileArn,
+		"auth_method":    creds.AuthMethod,
+		"client_id":      creds.ClientID,
+		"client_secret":  creds.ClientSecret,
+		"region":         creds.Region,
+		"expires_at":     creds.ExpiresAt,
 		"last_refreshed": creds.LastRefreshed,
 	}
 	if email != "" {

@@ -202,7 +202,27 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
-	return providers, resolvedModelName, nil
+	return providers, normalizeProviderPrefixedModel(resolvedModelName, providers), nil
+}
+
+func normalizeProviderPrefixedModel(modelName string, providers []string) string {
+	parsed := thinking.ParseSuffix(modelName)
+	baseModel := strings.TrimSpace(parsed.ModelName)
+	if baseModel == "" {
+		baseModel = strings.TrimSpace(modelName)
+	}
+	for _, provider := range providers {
+		if strings.EqualFold(strings.TrimSpace(provider), "kiro") {
+			clean := strings.TrimPrefix(strings.TrimPrefix(baseModel, "kiro/"), "kr/")
+			if clean != baseModel && clean != "" {
+				if parsed.HasSuffix {
+					return fmt.Sprintf("%s(%s)", clean, parsed.RawSuffix)
+				}
+				return clean
+			}
+		}
+	}
+	return modelName
 }
 
 func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageModel bool) *interfaces.ErrorMessage {
