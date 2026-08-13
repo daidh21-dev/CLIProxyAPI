@@ -391,11 +391,7 @@ func (h *Handler) claudeCodeModelOptions() ([]claudeCodeModelOption, map[string]
 			if id == "" {
 				continue
 			}
-			family := claudeCodeModelFamily(id)
-			seen[id] = claudeCodeModelOption{ID: id, DisplayName: strings.TrimSpace(model.DisplayName), Family: family}
-			if family != "" && defaults[family] == "" {
-				defaults[family] = id
-			}
+			seen[id] = claudeCodeModelOption{ID: id, DisplayName: strings.TrimSpace(model.DisplayName)}
 		}
 	}
 	out := make([]claudeCodeModelOption, 0, len(seen))
@@ -404,20 +400,6 @@ func (h *Handler) claudeCodeModelOptions() ([]claudeCodeModelOption, map[string]
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, defaults
-}
-
-func claudeCodeModelFamily(id string) string {
-	lower := strings.ToLower(id)
-	switch {
-	case strings.Contains(lower, "opus"):
-		return "opus"
-	case strings.Contains(lower, "sonnet"):
-		return "sonnet"
-	case strings.Contains(lower, "haiku"):
-		return "haiku"
-	default:
-		return ""
-	}
 }
 
 func (h *Handler) persistClaudeCodeFilterNaming(c *gin.Context, value bool) bool {

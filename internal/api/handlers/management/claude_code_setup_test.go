@@ -120,25 +120,33 @@ func TestWriteClaudeCodeExaMCP(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeModelOptionsPreferAliasesByFamily(t *testing.T) {
+func TestClaudeCodeModelOptionsReturnsAllConfiguredModels(t *testing.T) {
 	h := &Handler{cfg: &config.Config{ClaudeKey: []config.ClaudeKey{
 		{Models: []config.ClaudeModel{
 			{Name: "upstream-opus", Alias: "team/claude-opus-best"},
-			{Name: "claude-sonnet-4", Alias: "team/sonnet"},
-			{Name: "claude-haiku-4"},
+			{Name: "gpt-5", Alias: "team/gpt-latest"},
+			{Name: "kimi-k2.5"},
 		}},
 	}}}
 	models, defaults := h.claudeCodeModelOptions()
 	if len(models) != 3 {
 		t.Fatalf("model count = %d, want 3", len(models))
 	}
-	if got := defaults["opus"]; got != "team/claude-opus-best" {
-		t.Fatalf("opus default = %q", got)
+	for _, key := range []string{"opus", "sonnet", "haiku"} {
+		if got := defaults[key]; got != "" {
+			t.Fatalf("%s default = %q, want empty", key, got)
+		}
 	}
-	if got := defaults["sonnet"]; got != "team/sonnet" {
-		t.Fatalf("sonnet default = %q", got)
+	seen := map[string]bool{}
+	for _, model := range models {
+		seen[model.ID] = true
+		if model.Family != "" {
+			t.Fatalf("model %q family = %q, want empty", model.ID, model.Family)
+		}
 	}
-	if got := defaults["haiku"]; got != "claude-haiku-4" {
-		t.Fatalf("haiku default = %q", got)
+	for _, want := range []string{"team/claude-opus-best", "team/gpt-latest", "kimi-k2.5"} {
+		if !seen[want] {
+			t.Fatalf("missing model %q in %#v", want, models)
+		}
 	}
 }
