@@ -127,11 +127,38 @@ func TestTranslateToKiroRequestWithImageBlock(t *testing.T) {
 	}
 }
 
+func TestTranslateToKiroRequestPreservesAutoModel(t *testing.T) {
+	rawBody := []byte(`{"model":"kiro/auto","messages":[{"role":"user","content":"hello"}]}`)
+	translated, cleanModel, err := TranslateToKiroRequest(rawBody, "")
+	if err != nil {
+		t.Fatalf("failed to translate request: %v", err)
+	}
+	if cleanModel != "auto" {
+		t.Fatalf("expected clean model auto, got %q", cleanModel)
+	}
+
+	var res KiroGenerateRequest
+	if err := json.Unmarshal(translated, &res); err != nil {
+		t.Fatalf("failed to unmarshal output: %v", err)
+	}
+	if modelID := res.ConversationState.CurrentMessage.UserInputMessage.ModelID; modelID != "auto" {
+		t.Fatalf("expected upstream modelId auto, got %q", modelID)
+	}
+}
+
 func TestCleanKiroModelIDAliases(t *testing.T) {
 	tests := map[string]string{
+		"kiro/auto":                       "auto",
+		"kr/auto":                         "auto",
+		"kiro-auto":                       "auto",
+		"kiro":                            "auto",
+		"":                                "auto",
 		"kiro/claude-sonnet-4.5-thinking": "claude-sonnet-4.5",
 		"claude-sonnet-4-20250514":        "claude-sonnet-4",
-		"claude-3-5-sonnet":               "claude-sonnet-4.5",
+		"claude-3-5-sonnet":               "claude-3-5-sonnet",
+		"claude-3.5-sonnet":               "claude-3.5-sonnet",
+		"claude-3-7-sonnet":               "claude-3-7-sonnet",
+		"claude-3.7-sonnet":               "claude-3.7-sonnet",
 		"claude-sonnet-4-5":               "claude-sonnet-4.5",
 		"claude-haiku-4-5":                "claude-haiku-4.5",
 	}

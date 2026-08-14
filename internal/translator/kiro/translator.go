@@ -302,11 +302,13 @@ func CleanKiroModelID(model string) string {
 	model = strings.TrimSuffix(model, "-agentic")
 	switch strings.ToLower(model) {
 	case "", "kiro", "kiro-auto", "auto":
-		return "claude-sonnet-4.5"
+		return "auto"
 	case "claude-sonnet-4-20250514", "claude-sonnet-4-0", "claude-sonnet-4.0":
 		return "claude-sonnet-4"
-	case "claude-3-5-sonnet", "claude-3.5-sonnet", "claude-sonnet-4-5", "claude-3-7-sonnet", "claude-3.7-sonnet":
+	case "claude-sonnet-4-5":
 		return "claude-sonnet-4.5"
+	case "claude-3-5-sonnet", "claude-3.5-sonnet", "claude-3-7-sonnet", "claude-3.7-sonnet":
+		return model
 	case "claude-haiku-4.5", "claude-haiku-4-5":
 		return "claude-haiku-4.5"
 	case "claude-opus-4.5", "claude-opus-4-5":

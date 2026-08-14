@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
 
 const (
@@ -45,6 +46,7 @@ type claudeCodeModelOption struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName,omitempty"`
 	Family      string `json:"family,omitempty"`
+	Source      string `json:"source,omitempty"`
 }
 
 func (h *Handler) GetClaudeCodeSettings(c *gin.Context) {
@@ -376,24 +378,75 @@ func (h *Handler) firstProxyAPIKey() string {
 	return ""
 }
 
+// claudeCodeModelOptions returns every model exposed by this proxy so Claude Code
+// alias mappings can point at any provider (Claude, Codex, Gemini, Antigravity,
+// OpenAI-compatible, ...), not just Claude-family models.
 func (h *Handler) claudeCodeModelOptions() ([]claudeCodeModelOption, map[string]string) {
 	seen := map[string]claudeCodeModelOption{}
 	defaults := map[string]string{"opus": "", "sonnet": "", "haiku": "", "maxContextTokens": ""}
-	if h == nil || h.cfg == nil {
-		return nil, defaults
+
+	addModel := func(id, displayName, source string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		existing, ok := seen[id]
+		if ok && existing.DisplayName != "" {
+			return
+		}
+		seen[id] = claudeCodeModelOption{ID: id, DisplayName: strings.TrimSpace(displayName), Source: strings.TrimSpace(source)}
 	}
-	for _, key := range h.cfg.ClaudeKey {
-		for _, model := range key.Models {
-			id := strings.TrimSpace(model.Alias)
-			if id == "" {
-				id = strings.TrimSpace(model.Name)
+
+	// Registered models cover every provider currently backed by an auth file or API key.
+	for _, info := range registry.GetGlobalRegistry().GetAvailableModelInfos() {
+		if info == nil {
+			continue
+		}
+		id := info.ID
+		if id == "" {
+			id = info.Name
+		}
+		addModel(id, info.DisplayName, info.Type)
+	}
+
+	if h != nil && h.cfg != nil {
+		for _, key := range h.cfg.ClaudeKey {
+			for _, model := range key.Models {
+				addModel(firstNonEmpty(model.Alias, model.Name), model.DisplayName, "claude")
 			}
-			if id == "" {
-				continue
+		}
+		for _, key := range h.cfg.CodexKey {
+			for _, model := range key.Models {
+				addModel(firstNonEmpty(model.Alias, model.Name), model.DisplayName, "codex")
 			}
-			seen[id] = claudeCodeModelOption{ID: id, DisplayName: strings.TrimSpace(model.DisplayName)}
+		}
+		for _, key := range h.cfg.XAIKey {
+			for _, model := range key.Models {
+				addModel(firstNonEmpty(model.Alias, model.Name), model.DisplayName, "xai")
+			}
+		}
+		for _, key := range h.cfg.GeminiKey {
+			for _, model := range key.Models {
+				addModel(firstNonEmpty(model.Alias, model.Name), model.DisplayName, "gemini")
+			}
+		}
+		for _, key := range h.cfg.InteractionsKey {
+			for _, model := range key.Models {
+				addModel(firstNonEmpty(model.Alias, model.Name), model.DisplayName, "gemini")
+			}
+		}
+		for _, provider := range h.cfg.OpenAICompatibility {
+			for _, model := range provider.Models {
+				addModel(firstNonEmpty(model.Alias, model.Name), model.DisplayName, "openai-compatibility")
+			}
+		}
+		for _, key := range h.cfg.VertexCompatAPIKey {
+			for _, model := range key.Models {
+				addModel(firstNonEmpty(model.Alias, model.Name), model.DisplayName, "vertex")
+			}
 		}
 	}
+
 	out := make([]claudeCodeModelOption, 0, len(seen))
 	for _, model := range seen {
 		out = append(out, model)
