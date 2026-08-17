@@ -12,25 +12,25 @@ import (
 )
 
 const (
-	metadataAccessToken                = "access_token"
-	metadataRefreshToken               = "refresh_token"
-	metadataRefreshTokenFingerprint    = "refresh_token_fingerprint"
-	metadataOriginalRefreshTokenFP     = "original_refresh_token_fingerprint"
-	metadataKiroAPIKey                 = "kiro_api_key"
-	metadataAuthMethod                 = "auth_method"
-	metadataClientID                   = "client_id"
-	metadataClientSecret               = "client_secret"
-	metadataRegion                     = "region"
-	metadataProfileArn                 = "profile_arn"
-	metadataTokenEndpoint              = "token_endpoint"
-	metadataIssuerURL                  = "issuer_url"
-	metadataScopes                     = "scopes"
-	metadataEmail                      = "email"
-	metadataUserID                     = "user_id"
-	metadataExpiresAt                  = "expires_at"
-	metadataLastRefreshed              = "last_refreshed"
-	metadataMachineID                  = "machine_id"
-	metadataBaseURL                    = "base_url"
+	metadataAccessToken             = "access_token"
+	metadataRefreshToken            = "refresh_token"
+	metadataRefreshTokenFingerprint = "refresh_token_fingerprint"
+	metadataOriginalRefreshTokenFP  = "original_refresh_token_fingerprint"
+	metadataKiroAPIKey              = "kiro_api_key"
+	metadataAuthMethod              = "auth_method"
+	metadataClientID                = "client_id"
+	metadataClientSecret            = "client_secret"
+	metadataRegion                  = "region"
+	metadataProfileArn              = "profile_arn"
+	metadataTokenEndpoint           = "token_endpoint"
+	metadataIssuerURL               = "issuer_url"
+	metadataScopes                  = "scopes"
+	metadataEmail                   = "email"
+	metadataUserID                  = "user_id"
+	metadataExpiresAt               = "expires_at"
+	metadataLastRefreshed           = "last_refreshed"
+	metadataMachineID               = "machine_id"
+	metadataBaseURL                 = "base_url"
 )
 
 // MetadataString returns the trimmed string metadata value for key.
@@ -144,20 +144,20 @@ func ApplyCredentialsToAuth(auth *coreauth.Auth, creds *KiroCredentials) *coreau
 		kiroAPIKey = creds.AccessToken
 	}
 	for key, value := range map[string]any{
-		metadataAccessToken:  creds.AccessToken,
-		metadataRefreshToken: creds.RefreshToken,
-		metadataProfileArn:   creds.ProfileArn,
-		metadataAuthMethod:   creds.AuthMethod,
-		metadataClientID:     creds.ClientID,
-		metadataClientSecret: creds.ClientSecret,
-		metadataRegion:       creds.Region,
-		metadataExpiresAt:    creds.ExpiresAt,
+		metadataAccessToken:   creds.AccessToken,
+		metadataRefreshToken:  creds.RefreshToken,
+		metadataProfileArn:    creds.ProfileArn,
+		metadataAuthMethod:    creds.AuthMethod,
+		metadataClientID:      creds.ClientID,
+		metadataClientSecret:  creds.ClientSecret,
+		metadataRegion:        creds.Region,
+		metadataExpiresAt:     creds.ExpiresAt,
 		metadataLastRefreshed: creds.LastRefreshed,
 		metadataTokenEndpoint: creds.TokenEndpoint,
-		metadataIssuerURL:    creds.IssuerURL,
-		metadataScopes:       creds.Scopes,
-		metadataKiroAPIKey:   kiroAPIKey,
-		metadataBaseURL:      creds.BaseURL,
+		metadataIssuerURL:     creds.IssuerURL,
+		metadataScopes:        creds.Scopes,
+		metadataKiroAPIKey:    kiroAPIKey,
+		metadataBaseURL:       creds.BaseURL,
 	} {
 		if value == nil || value == "" {
 			continue

@@ -82,6 +82,9 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 
 	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
 	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
+	if h.Cfg != nil && h.Cfg.ClaudeCode.FilterNamingRequests && h.writeClaudeCodeNamingBypass(c, rawJSON) {
+		return
+	}
 
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
@@ -135,6 +138,182 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 
 // rewriteClaudeDDModelInBody decodes model IDs of the form claude-fable-5-dd-<reversed>
 // back into the original model name used for routing and upstream requests.
+func (h *ClaudeCodeAPIHandler) writeClaudeCodeNamingBypass(c *gin.Context, rawJSON []byte) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(c.GetHeader("User-Agent")), "claude-cli") {
+		return false
+	}
+	if !containsClaudeCodeNamingRequest(rawJSON) {
+		return false
+	}
+	userText := firstClaudeCodeUserText(rawJSON)
+	if strings.TrimSpace(userText) == "" {
+		userText = "New topic"
+	}
+	parts := strings.Fields(strings.TrimSpace(userText))
+	if len(parts) > 3 {
+		parts = parts[:3]
+	}
+	title := strings.Join(parts, " ")
+	if title == "" {
+		title = "New topic"
+	}
+	payload := map[string]any{"isNewTopic": true, "title": title}
+	body, errMarshal := json.Marshal(payload)
+	if errMarshal != nil {
+		body = []byte(`{"isNewTopic":true,"title":"New topic"}`)
+	}
+	if streamResult := gjson.GetBytes(rawJSON, "stream"); streamResult.Exists() && streamResult.Type != gjson.False {
+		return h.writeClaudeCodeNamingBypassStream(c, rawJSON, string(body))
+	}
+	c.Header("Content-Type", "application/json")
+	modelName := gjson.GetBytes(rawJSON, "model").String()
+	response := gin.H{
+		"id":            fmt.Sprintf("msg_%d", time.Now().UnixNano()),
+		"type":          "message",
+		"role":          "assistant",
+		"model":         modelName,
+		"content":       []gin.H{{"type": "text", "text": string(body)}},
+		"stop_reason":   "end_turn",
+		"stop_sequence": nil,
+		"usage": gin.H{
+			"input_tokens":  0,
+			"output_tokens": 0,
+		},
+	}
+	c.JSON(http.StatusOK, response)
+	return true
+}
+
+func (h *ClaudeCodeAPIHandler) writeClaudeCodeNamingBypassStream(c *gin.Context, rawJSON []byte, namingText string) bool {
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		return false
+	}
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Status(http.StatusOK)
+	modelName := gjson.GetBytes(rawJSON, "model").String()
+	messageID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	writeClaudeCodeNamingEvent := func(event string, payload any) {
+		data, errMarshal := json.Marshal(payload)
+		if errMarshal != nil {
+			return
+		}
+		_, _ = fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, data)
+		flusher.Flush()
+	}
+	writeClaudeCodeNamingEvent("message_start", gin.H{
+		"type": "message_start",
+		"message": gin.H{
+			"id":            messageID,
+			"type":          "message",
+			"role":          "assistant",
+			"model":         modelName,
+			"content":       []any{},
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage": gin.H{
+				"input_tokens":  0,
+				"output_tokens": 0,
+			},
+		},
+	})
+	writeClaudeCodeNamingEvent("content_block_start", gin.H{
+		"type":  "content_block_start",
+		"index": 0,
+		"content_block": gin.H{
+			"type": "text",
+			"text": "",
+		},
+	})
+	writeClaudeCodeNamingEvent("content_block_delta", gin.H{
+		"type":  "content_block_delta",
+		"index": 0,
+		"delta": gin.H{
+			"type": "text_delta",
+			"text": namingText,
+		},
+	})
+	writeClaudeCodeNamingEvent("content_block_stop", gin.H{"type": "content_block_stop", "index": 0})
+	writeClaudeCodeNamingEvent("message_delta", gin.H{
+		"type": "message_delta",
+		"delta": gin.H{
+			"stop_reason":   "end_turn",
+			"stop_sequence": nil,
+		},
+		"usage": gin.H{
+			"output_tokens": 0,
+		},
+	})
+	writeClaudeCodeNamingEvent("message_stop", gin.H{"type": "message_stop"})
+	return true
+}
+
+func containsClaudeCodeNamingRequest(rawJSON []byte) bool {
+	if !gjson.GetBytes(rawJSON, "messages").Exists() {
+		return false
+	}
+	if text := topLevelClaudeCodeSystemText(rawJSON); strings.Contains(text, "isNewTopic") {
+		return true
+	}
+	messages := gjson.GetBytes(rawJSON, "messages").Array()
+	for _, message := range messages {
+		if strings.EqualFold(message.Get("role").String(), "system") && strings.Contains(claudeCodeMessageText(message.Get("content")), "isNewTopic") {
+			return true
+		}
+	}
+	return false
+}
+
+func firstClaudeCodeUserText(rawJSON []byte) string {
+	messages := gjson.GetBytes(rawJSON, "messages").Array()
+	for _, message := range messages {
+		if !strings.EqualFold(message.Get("role").String(), "user") {
+			continue
+		}
+		if text := strings.TrimSpace(claudeCodeMessageText(message.Get("content"))); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func topLevelClaudeCodeSystemText(rawJSON []byte) string {
+	system := gjson.GetBytes(rawJSON, "system")
+	return strings.TrimSpace(claudeCodeMessageText(system))
+}
+
+func claudeCodeMessageText(content gjson.Result) string {
+	if !content.Exists() {
+		return ""
+	}
+	if content.Type == gjson.String {
+		return content.String()
+	}
+	if content.IsArray() {
+		parts := make([]string, 0)
+		content.ForEach(func(_, value gjson.Result) bool {
+			if strings.EqualFold(value.Get("type").String(), "text") {
+				if text := strings.TrimSpace(value.Get("text").String()); text != "" {
+					parts = append(parts, text)
+				}
+			}
+			return true
+		})
+		return strings.Join(parts, " ")
+	}
+	if content.IsObject() {
+		if text := strings.TrimSpace(content.Get("text").String()); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
 func rewriteClaudeDDModelInBody(rawJSON []byte) []byte {
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	resolved := claudemodels.ResolveClaudeModelIDPrefix(modelName)

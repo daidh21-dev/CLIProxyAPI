@@ -125,6 +125,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)
 		mgmt.DELETE("/claude-api-key", s.mgmt.DeleteClaudeKey)
 
+		mgmt.GET("/claude-code-settings", s.mgmt.GetClaudeCodeSettings)
+		mgmt.POST("/claude-code-settings", s.mgmt.PostClaudeCodeSettings)
+		mgmt.DELETE("/claude-code-settings", s.mgmt.DeleteClaudeCodeSettings)
+
 		mgmt.GET("/codex-api-key", s.mgmt.GetCodexKeys)
 		mgmt.PUT("/codex-api-key", s.mgmt.PutCodexKeys)
 		mgmt.PATCH("/codex-api-key", s.mgmt.PatchCodexKey)
