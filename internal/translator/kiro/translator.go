@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -18,7 +19,11 @@ const (
 	maxToolDescLen                = 10237
 	maxPayloadBytes               = 900 * 1024
 	truncationPlaceholder         = "[Earlier conversation history was truncated to fit the model's input limit. Older messages and tool activity have been omitted.]"
+	truncationAck                 = "Understood. I will continue using the remaining recent context."
 	minRecentHistoryTurns         = 4
+	// maxTruncatedHistoryItemBytes caps a single older history turn once the
+	// payload exceeds maxPayloadBytes (large tool outputs dominate long sessions).
+	maxTruncatedHistoryItemBytes = 16 * 1024
 )
 
 // KiroUserMessage represents a user message in Kiro payload.
@@ -220,7 +225,9 @@ func TranslateToKiroRequest(rawBody []byte, profileArn string) ([]byte, string, 
 	}
 
 	history = trimLeadingAssistantHistory(history)
+	primingLen := 0
 	if strings.TrimSpace(systemPrompt) != "" {
+		primingLen = 2
 		priming := []KiroHistoryItem{
 			{UserInputMessage: &KiroUserMessage{Content: strings.TrimSpace(systemPrompt), ModelID: cleanModel, Origin: origin}},
 			{AssistantResponseMessage: &KiroAssistantMessage{Content: "I will follow these instructions."}},
@@ -277,7 +284,7 @@ func TranslateToKiroRequest(rawBody []byte, profileArn string) ([]byte, string, 
 		kiroReq.InferenceConfig = &KiroInferenceConfig{MaxTokens: maxTokens, Temperature: req.Temperature, TopP: req.TopP}
 	}
 
-	truncatePayloadToLimit(&kiroReq)
+	truncatePayloadToLimit(&kiroReq, primingLen)
 	outBytes, err := json.Marshal(kiroReq)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to marshal Kiro request: %w", err)
@@ -319,6 +326,8 @@ func CleanKiroModelID(model string) string {
 		return "claude-opus-4.7"
 	case "claude-opus-4.8", "claude-opus-4-8":
 		return "claude-opus-4.8"
+	case "claude-opus-5.5", "claude-opus-5-5":
+		return "claude-opus-5.5"
 	case "claude-sonnet-4.6", "claude-sonnet-4-6":
 		return "claude-sonnet-4.6"
 	case "deepseek-v3.2", "deepseek-3.2", "deepseek-3-2":
@@ -908,19 +917,61 @@ func buildConversationID(modelID, systemPrompt, anchor string) string {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(seed)).String()
 }
 
-func truncatePayloadToLimit(payload *KiroGenerateRequest) {
+// truncatePayloadToLimit keeps the Kiro payload under maxPayloadBytes while
+// preserving as much useful context as possible:
+//  1. the system-prompt priming pair (first primingLen history items) is never dropped;
+//  2. oversized older turns (tool output dumps, file contents, images) are shrunk first;
+//  3. only then are the oldest turns dropped, keeping the largest recent suffix that fits.
+func truncatePayloadToLimit(payload *KiroGenerateRequest, primingLen int) {
 	if payload == nil || payloadByteSize(payload) <= maxPayloadBytes {
 		return
 	}
 	history := payload.ConversationState.History
-	keepFrom := len(history)
-	for keepFrom > 0 {
-		payload.ConversationState.History = append([]KiroHistoryItem{{UserInputMessage: &KiroUserMessage{Content: truncationPlaceholder, ModelID: payload.ConversationState.CurrentMessage.UserInputMessage.ModelID, Origin: "AI_EDITOR"}}}, history[keepFrom:]...)
-		if payloadByteSize(payload) <= maxPayloadBytes || len(history)-keepFrom < minRecentHistoryTurns {
-			break
-		}
-		keepFrom--
+	if primingLen < 0 || primingLen > len(history) {
+		primingLen = 0
 	}
+	prefix := append([]KiroHistoryItem(nil), history[:primingLen]...)
+	body := append([]KiroHistoryItem(nil), history[primingLen:]...)
+	modelID := payload.ConversationState.CurrentMessage.UserInputMessage.ModelID
+
+	protectFrom := len(body) - minRecentHistoryTurns
+	if protectFrom < 0 {
+		protectFrom = 0
+	}
+
+	// Phase 1: shrink oversized older turns (oldest first, only as many as needed)
+	// without dropping any of them.
+	excess := payloadByteSize(payload) - maxPayloadBytes
+	for i := 0; i < protectFrom && excess > 0; i++ {
+		before := historyItemTextBytes(body[i])
+		body[i] = shrinkHistoryItem(body[i], maxTruncatedHistoryItemBytes)
+		excess -= before - historyItemTextBytes(body[i])
+	}
+	payload.ConversationState.History = joinHistory(prefix, nil, body)
+	if payloadByteSize(payload) > maxPayloadBytes {
+		// Phase 2: drop the oldest turns, keeping at least minRecentHistoryTurns.
+		marker := []KiroHistoryItem{
+			{UserInputMessage: &KiroUserMessage{Content: truncationPlaceholder, ModelID: modelID, Origin: "AI_EDITOR"}},
+			{AssistantResponseMessage: &KiroAssistantMessage{Content: truncationAck}},
+		}
+		if !dropOldestHistory(payload, prefix, marker, body, protectFrom) {
+			// Phase 3: even the recent turns are too large; shrink them and allow
+			// dropping down to an empty suffix.
+			for i := range body {
+				body[i] = shrinkHistoryItem(body[i], maxTruncatedHistoryItemBytes)
+			}
+			if !dropOldestHistory(payload, prefix, marker, body, len(body)) {
+				payload.ConversationState.History = joinHistory(prefix, marker, nil)
+			}
+		}
+	}
+
+	// Truncation can discard the assistant turn that carried a tool_use whose
+	// matching tool_result is still attached to the current message. That leaves
+	// an orphaned toolResult, which upstreams reject with TOOL_USE_RESULT_MISMATCH
+	// ("unexpected tool_use_id ... must have a corresponding tool_use block in the
+	// previous message"). Re-establish the pairing invariant after trimming.
+	enforceCurrentToolResultPairing(payload)
 	if payloadByteSize(payload) > maxPayloadBytes {
 		cur := &payload.ConversationState.CurrentMessage.UserInputMessage
 		overhead := payloadByteSize(payload) - len(cur.Content)
@@ -928,8 +979,168 @@ func truncatePayloadToLimit(payload *KiroGenerateRequest) {
 		if budget <= 0 {
 			cur.Content = minimalFallbackUserContent
 		} else if len(cur.Content) > budget {
-			cur.Content = cur.Content[:budget]
+			cur.Content = truncateUTF8(cur.Content, budget)
 		}
+	}
+}
+
+// dropOldestHistory binary-searches the smallest cut index in body (<= maxCut)
+// whose suffix still fits, so the most recent context is retained. Cuts only land
+// on user turns (or the end) so the marker pair keeps user/assistant alternation.
+// It reports whether a fitting cut was found.
+func dropOldestHistory(payload *KiroGenerateRequest, prefix, marker, body []KiroHistoryItem, maxCut int) bool {
+	cuts := make([]int, 0, len(body)+1)
+	for i := 1; i <= len(body) && i <= maxCut; i++ {
+		if i == len(body) || body[i].UserInputMessage != nil {
+			cuts = append(cuts, i)
+		}
+	}
+	if len(cuts) == 0 {
+		return false
+	}
+	fits := func(cut int) bool {
+		payload.ConversationState.History = joinHistory(prefix, marker, body[cut:])
+		return payloadByteSize(payload) <= maxPayloadBytes
+	}
+	lo, hi := 0, len(cuts)-1
+	if !fits(cuts[hi]) {
+		return false
+	}
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if fits(cuts[mid]) {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	payload.ConversationState.History = joinHistory(prefix, marker, body[cuts[lo]:])
+	return true
+}
+
+func joinHistory(parts ...[]KiroHistoryItem) []KiroHistoryItem {
+	total := 0
+	for _, p := range parts {
+		total += len(p)
+	}
+	out := make([]KiroHistoryItem, 0, total)
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
+// historyItemTextBytes approximates the serialized weight of a history item.
+func historyItemTextBytes(item KiroHistoryItem) int {
+	n := 0
+	if u := item.UserInputMessage; u != nil {
+		n += len(u.Content)
+		for _, img := range u.Images {
+			n += len(img.Source.Bytes)
+		}
+	}
+	if a := item.AssistantResponseMessage; a != nil {
+		n += len(a.Content)
+	}
+	return n
+}
+
+// shrinkHistoryItem returns a copy of item whose text is capped at limit bytes
+// (keeping head and tail) and whose images are replaced by a short note.
+func shrinkHistoryItem(item KiroHistoryItem, limit int) KiroHistoryItem {
+	if u := item.UserInputMessage; u != nil {
+		c := *u
+		if len(c.Images) > 0 {
+			c.Content = joinHistoryText(c.Content, fmt.Sprintf("[%d image(s) omitted from older history]", len(c.Images)))
+			c.Images = nil
+		}
+		c.Content = shrinkText(c.Content, limit)
+		item.UserInputMessage = &c
+	}
+	if a := item.AssistantResponseMessage; a != nil {
+		c := *a
+		c.Content = shrinkText(c.Content, limit)
+		item.AssistantResponseMessage = &c
+	}
+	return item
+}
+
+func shrinkText(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	head := truncateUTF8(s, limit*3/4)
+	tail := s[len(s)-limit/4:]
+	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
+	}
+	omitted := len(s) - len(head) - len(tail)
+	return head + fmt.Sprintf("\n\n[... %d bytes of older content omitted to fit the model's input limit ...]\n\n", omitted) + tail
+}
+
+// truncateUTF8 cuts s to at most n bytes without splitting a multi-byte rune.
+func truncateUTF8(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	if n <= 0 {
+		return ""
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// enforceCurrentToolResultPairing guarantees that any structured toolResults
+// attached to the current message are backed by a matching tool_use in the last
+// history item. When they are not (e.g. because history truncation dropped the
+// assistant turn that issued the tool call), the structured results are folded
+// into the current message's text content and the orphaned toolResults are
+// removed. The textual form is already present via buildToolResultsContinuation
+// on the current content, so no information is lost.
+func enforceCurrentToolResultPairing(payload *KiroGenerateRequest) {
+	if payload == nil {
+		return
+	}
+	cur := &payload.ConversationState.CurrentMessage.UserInputMessage
+	if cur.UserInputMessageContext == nil || len(cur.UserInputMessageContext.ToolResults) == 0 {
+		return
+	}
+	history := payload.ConversationState.History
+	var lastToolUseIDs map[string]bool
+	if n := len(history); n > 0 && history[n-1].AssistantResponseMessage != nil {
+		lastToolUseIDs = make(map[string]bool)
+		for _, tu := range history[n-1].AssistantResponseMessage.ToolUses {
+			if id := strings.TrimSpace(tu.ToolUseID); id != "" {
+				lastToolUseIDs[id] = true
+			}
+		}
+	}
+
+	allPaired := len(lastToolUseIDs) > 0
+	for _, tr := range cur.UserInputMessageContext.ToolResults {
+		if !lastToolUseIDs[strings.TrimSpace(tr.ToolUseID)] {
+			allPaired = false
+			break
+		}
+	}
+	if allPaired {
+		return
+	}
+
+	// Fold the orphaned tool results into the current message text so the model
+	// still sees their content, then drop the structured toolResults.
+	narrated := buildToolResultsContinuation(cur.UserInputMessageContext.ToolResults)
+	if narrated != "" && narrated != minimalFallbackUserContent {
+		cur.Content = joinHistoryText(cur.Content, narrated)
+	}
+	cur.UserInputMessageContext.ToolResults = nil
+	if len(cur.UserInputMessageContext.Tools) == 0 {
+		cur.UserInputMessageContext = nil
+	}
+	if strings.TrimSpace(cur.Content) == "" && len(cur.Images) == 0 {
+		cur.Content = minimalFallbackUserContent
 	}
 }
 

@@ -161,6 +161,9 @@ func TestCleanKiroModelIDAliases(t *testing.T) {
 		"claude-3.7-sonnet":               "claude-3.7-sonnet",
 		"claude-sonnet-4-5":               "claude-sonnet-4.5",
 		"claude-haiku-4-5":                "claude-haiku-4.5",
+		"claude-opus-5.5":                 "claude-opus-5.5",
+		"claude-opus-5-5":                 "claude-opus-5.5",
+		"kiro/claude-opus-5.5-thinking":   "claude-opus-5.5",
 	}
 	for input, want := range tests {
 		if got := CleanKiroModelID(input); got != want {

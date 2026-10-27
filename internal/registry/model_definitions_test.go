@@ -91,3 +91,15 @@ func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing
 		t.Fatalf("unknown model should not get Antigravity web search model, got %q", got)
 	}
 }
+
+func TestKiroModelsIncludeOpus55(t *testing.T) {
+	count := 0
+	for _, model := range GetKiroModels() {
+		if model != nil && model.ID == "claude-opus-5.5" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("claude-opus-5.5 appears %d times in Kiro models, want 1", count)
+	}
+}

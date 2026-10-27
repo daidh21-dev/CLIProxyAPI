@@ -114,7 +114,25 @@ func GetKiroModels() []*ModelInfo {
 			{ID: "qwen3-coder-next", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Qwen3 Coder Next (Kiro)", ContextLength: 128000, MaxCompletionTokens: 8192},
 		}
 	}
+	// Ensure models that Kiro serves but the remote catalog may not list yet are always available.
+	for _, extra := range kiroSupplementalModels {
+		found := false
+		for _, m := range models {
+			if m != nil && strings.EqualFold(m.ID, extra.ID) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			models = append(models, cloneModelInfos([]*ModelInfo{extra})...)
+		}
+	}
 	return models
+}
+
+// kiroSupplementalModels are merged into the Kiro catalog when missing from the remote definitions.
+var kiroSupplementalModels = []*ModelInfo{
+	{ID: "claude-opus-5.5", Object: "model", OwnedBy: "aws-kiro", Type: "kiro", DisplayName: "Claude Opus 5.5 (Kiro)", ContextLength: 1000000, MaxCompletionTokens: 32000},
 }
 
 // AntigravityWebSearchModelFor returns the Antigravity model that should run a

@@ -545,6 +545,12 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	if errParse != nil {
 		return resp, errParse
 	}
+	if inputTokens <= 0 {
+		inputTokens = kiroEstimateInputTokens(req.Payload)
+	}
+	if outputTokens <= 0 {
+		outputTokens = kiroEstimateTextTokens(string(content), string(reasoning), kiroToolUsesText(toolUses))
+	}
 	responseFormat := responseFormatOrOpenAI(opts)
 	var payloadOut map[string]any
 	switch responseFormat {
@@ -654,7 +660,7 @@ func streamOpenAIFromKiro(ctx context.Context, body io.Reader, out chan<- clipro
 	})
 }
 
-func streamClaudeFromKiro(ctx context.Context, body io.Reader, out chan<- cliproxyexecutor.StreamChunk, model string) {
+func streamClaudeFromKiro(ctx context.Context, body io.Reader, out chan<- cliproxyexecutor.StreamChunk, model string, inputTokens int) {
 	messageID := "msg_" + uuid.New().String()
 	if !sendClaudeSSE(ctx, out, "message_start", map[string]any{
 		"type": "message_start",
@@ -666,11 +672,12 @@ func streamClaudeFromKiro(ctx context.Context, body io.Reader, out chan<- clipro
 			"content":       []any{},
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage":         map[string]any{"input_tokens": 0, "output_tokens": 0},
+			"usage":         map[string]any{"input_tokens": inputTokens, "output_tokens": 0},
 		},
 	}) {
 		return
 	}
+	var outputText strings.Builder
 	blockIndex := 0
 	activeTextIndex := -1
 	activeThinkingIndex := -1
@@ -684,6 +691,7 @@ func streamClaudeFromKiro(ctx context.Context, body io.Reader, out chan<- clipro
 	}
 	errParse := kiroeventstream.ParseEventStream(body, &kiroeventstream.StreamCallback{
 		OnText: func(text string, isThinking bool) {
+			outputText.WriteString(text)
 			if isThinking {
 				if activeThinkingIndex < 0 {
 					activeThinkingIndex = blockIndex
@@ -713,6 +721,8 @@ func streamClaudeFromKiro(ctx context.Context, body io.Reader, out chan<- clipro
 			if err != nil {
 				inputJSON = []byte("{}")
 			}
+			outputText.WriteString(toolUse.Name)
+			outputText.Write(inputJSON)
 			sendClaudeSSE(ctx, out, "content_block_delta", map[string]any{"type": "content_block_delta", "index": idx, "delta": map[string]any{"type": "input_json_delta", "partial_json": string(inputJSON)}})
 			sendClaudeSSE(ctx, out, "content_block_stop", map[string]any{"type": "content_block_stop", "index": idx})
 		},
@@ -729,7 +739,10 @@ func streamClaudeFromKiro(ctx context.Context, body io.Reader, out chan<- clipro
 	}
 	stopBlock(activeThinkingIndex)
 	stopBlock(activeTextIndex)
-	sendClaudeSSE(ctx, out, "message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": mapClaudeStopReason(upstreamStopReason, toolCount), "stop_sequence": nil}, "usage": map[string]any{"output_tokens": outputTokens}})
+	if outputTokens <= 0 {
+		outputTokens = kiroEstimateTextTokens(outputText.String())
+	}
+	sendClaudeSSE(ctx, out, "message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": mapClaudeStopReason(upstreamStopReason, toolCount), "stop_sequence": nil}, "usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens}})
 	sendClaudeSSE(ctx, out, "message_stop", map[string]any{"type": "message_stop"})
 }
 
@@ -755,7 +768,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		}()
 		switch responseFormatOrOpenAI(opts) {
 		case sdktranslator.FormatClaude:
-			streamClaudeFromKiro(ctx, respUpstream.Body, out, req.Model)
+			streamClaudeFromKiro(ctx, respUpstream.Body, out, req.Model, kiroEstimateInputTokens(req.Payload))
 		default:
 			streamOpenAIFromKiro(ctx, respUpstream.Body, out, req.Model)
 		}
@@ -799,11 +812,6 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	kiroauth.ApplyCredentialsToAuth(updated, refreshed)
 	kiroauth.SetRefreshFingerprints(updated, refreshed.RefreshToken, creds.RefreshToken)
 	return updated, nil
-}
-
-// CountTokens implements ProviderExecutor interface.
-func (e *KiroExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
-	return resp, fmt.Errorf("CountTokens not supported for Kiro")
 }
 
 // HttpRequest implements ProviderExecutor interface.
